@@ -1,0 +1,353 @@
+name: Build and Publish to Github Package and Deploy in AKS
+
+on:
+  push:
+    # Sequence of patterns matched against refs/heads
+    branches:    
+      - phtndev
+      - phtnqa
+      - fbqa
+      - fbuat
+
+env:
+  REGISTRY: 'ghcr.io'
+  IMAGE_NAME: 'focus-brands/gx-api-payment/gx-api-payment-${{ vars.HELM_RELEASE_NAME }}'
+  HELM_PATH: './charts/gx-api-payment/'
+  TAG_NAME: ${{ github.ref_name }}
+  PKG_NAME: '@focus-brands/gx-api-payment'
+  API_NAME: 'payment'
+  VERSION1: 'v1'
+  VERSION2: 'v2'
+  BRANCH_NAME: ${{ github.ref_name }}
+  NAMESPACE: ${{ github.ref_name }}
+  REPO_NAME: 'gx-api-payment'
+  CLUSTER_NAME: ${{ vars.CLUSTER_NAME}}
+  RESOURCE_GROUP: ${{ vars.RESOURCE_GROUP}}
+  HELM_RELEASE_NAME: ${{ vars.HELM_RELEASE_NAME}}
+  APIM_NAME: ${{ vars.APIM_NAME}}
+  BRANDS: 'moes,jamba,mca'
+  
+permissions:
+  contents: read
+  packages: write
+jobs:
+  set-environment:
+    runs-on: ubuntu-latest
+    outputs:
+      env_name: ${{ steps.set-env.outputs.env_name }}
+    steps:
+      - name: Set Environment Variable based on branch
+        id: set-env
+        run: |
+          if [[ "${{ github.ref }}" == "refs/heads/phtndev" ]]; then
+          echo "ENV_NAME=pdev" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.ref }}" == "refs/heads/phtnqa" ]]; then
+          echo "ENV_NAME=pqa" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.ref }}" == "refs/heads/fbqa" ]]; then
+          echo "ENV_NAME=fbqa" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.ref }}" == "refs/heads/fbuat" ]]; then
+          echo "ENV_NAME=fbuat" >> $GITHUB_OUTPUT
+          fi
+
+  build-publish-npmpkg:
+    runs-on: ubuntu-latest
+    needs: set-environment
+    environment: ${{ needs.set-environment.outputs.env_name }}
+    steps:
+      - uses: actions/checkout@v3
+        with:
+        # Disabling shallow clone is recommended for improving relevancy of reporting
+          fetch-depth: 0
+          
+      - uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+          registry-url: 'https://npm.pkg.github.com'
+          scope: '@focus-brands'
+          
+      - name: Replace the token in npmrc file
+        shell: bash
+        env: 
+          PAT: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+         sed -i.back "s|NODE_AUTH_TOKEN|${PAT}|g" .npmrc
+         
+      - name: Get current package version   
+        run: echo "version=$(npm info ${{ env.PKG_NAME }} --json | jq '.versions[-1]' | tr -d '"')" >> $GITHUB_ENV
+        
+      - name: Set package version in environment  
+        run: npm version ${{ env.version }} --no-git-tag-version --allow-same-version
+        
+      - name: Install dependencies
+        run: npm install
+        
+      - name: Update package version
+        run: npm version patch -m "[RELEASE] %s" --no-git-tag-version --allow-same-version
+
+      - name: Run unit tests
+        run: npm run test:cov
+          
+      - name: Creates a "dist" directory with the production build
+        run: npm run build
+        
+      - run: npm publish --tag ${{ env.TAG_NAME }}
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-and-push-image:
+    needs: [build-publish-npmpkg, set-environment]
+    runs-on: ubuntu-latest
+    environment: ${{ needs.set-environment.outputs.env_name }}
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+      - name: Login to GitHub Package Registry
+        run: echo ${{ secrets.GITHUB_TOKEN }} | docker login docker.pkg.github.com -u ${{ github.repository }} --password-stdin
+      
+      - name: Replace the token in npmrc file
+        shell: bash
+        env: 
+          PAT: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+         sed -i.back "s|NODE_AUTH_TOKEN|${PAT}|g" .npmrc
+
+      - name: Get latest package version   
+        run: echo "version1=$(npm info ${{ env.PKG_NAME }} --json | jq '.versions[-1]' | tr -d '"')" >> $GITHUB_ENV
+
+      - name: Update Dockerfile with latest tag version
+        run: sed -i "s/${{ env.REPO_NAME }}@.*/${{ env.REPO_NAME }}@${{ env.version1 }}/" Dockerfile
+        
+      - name: Build the Docker image
+        run: docker build -t ${{ env.REPO_NAME }}-${{ env.HELM_RELEASE_NAME }}:${{github.run_number}} .
+        
+      - name: Tag the Docker image
+        run: docker tag ${{ env.REPO_NAME }}-${{ env.HELM_RELEASE_NAME }}:${{github.run_number}} docker.pkg.github.com/focus-brands/${{ env.REPO_NAME }}/${{ env.REPO_NAME }}-${{ env.HELM_RELEASE_NAME }}:${{github.run_number}}
+        
+      - name: Push the Docker image to the registry
+        run: docker push docker.pkg.github.com/focus-brands/${{ env.REPO_NAME }}/${{ env.REPO_NAME }}-${{ env.HELM_RELEASE_NAME }}:${{github.run_number}}
+
+  deploy-image:
+    needs: [build-and-push-image, set-environment]
+    runs-on: ubuntu-latest
+    environment: ${{ needs.set-environment.outputs.env_name }}
+    permissions:
+      contents: read
+      packages: read
+      id-token: write
+    steps:
+
+    - name: Checkout repository
+      uses: actions/checkout@v3
+
+    - name: Set the namespace name
+      id: step_one
+      run: |
+        echo "NAMESPACE_CLEAN=$(echo "${NAMESPACE//\//-}" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
+
+    - name: Azure Login
+      uses: azure/login@v1
+      with:
+        client-id: ${{ secrets.CLIENT_ID }}
+        tenant-id: ${{ secrets.TENANT_ID }}
+        subscription-id: ${{ secrets.SUBSCRIPTION_ID }}
+    
+    - name: Set K8S context
+      uses: azure/aks-set-context@v3
+      with:
+        resource-group: ${{ env.RESOURCE_GROUP }}
+        cluster-name: ${{ env.CLUSTER_NAME }}
+    
+    - name: Replace namespace name
+      run: |
+        sed -i "s/REPLACE_ME/$NAMESPACE_CLEAN/g" manifests/namespace.yaml
+
+    - name: Create namespace
+      uses: azure/k8s-deploy@v4
+      with:
+        name: ${{ env.NAMESPACE_CLEAN }}
+        manifests: |
+          manifests/namespace.yaml
+        strategy: basic
+        action: deploy
+
+    #- name: Create GHCR pull secret
+    #  uses: azure/k8s-create-secret@v4
+    #  with:
+    #    namespace: ${{ env.NAMESPACE_CLEAN }}
+    #    secret-name: 'ghcr-pull-cr'
+    #    container-registry-url: ${{ env.REGISTRY }}
+    #    container-registry-username: ${{ github.actor }}
+    #    container-registry-password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Read file content
+      if: ${{ needs.set-environment.outputs.env_name == 'pdev' || needs.set-environment.outputs.env_name == 'pqa' || needs.set-environment.outputs.env_name == 'fbqa' || needs.set-environment.outputs.env_name == 'fbuat' }}
+      id: file-content
+      run: |
+          # Replace 'file.txt' with the actual path to your file
+          content=$(cat manifests/secrets/${{ needs.set-environment.outputs.env_name }}/akv-secret-sync.yaml)
+          echo "::set-output name=content::$content"
+        
+    - name: Check if file content is empty
+      if: ${{ needs.set-environment.outputs.env_name == 'pdev' || needs.set-environment.outputs.env_name == 'pqa' || needs.set-environment.outputs.env_name == 'fbqa' || needs.set-environment.outputs.env_name == 'fbuat' }}
+      id: check-content
+      run: |
+          if [ -z "${{ steps.file-content.outputs.content }}" ]; then
+            echo "File content is empty."
+            echo "::set-output name=empty::true"
+          else
+            echo "File content is not empty."
+            echo "::set-output name=empty::false"
+          fi
+    
+    - name: Deploy secrets injection to AKS
+      if: ${{ steps.check-content.outputs.empty != 'true' }}
+      uses: azure/k8s-deploy@v4
+      with:
+        namespace: ${{ env.NAMESPACE_CLEAN }}
+        manifests: |
+          manifests/secrets/${{ env.HELM_RELEASE_NAME }}
+        strategy: basic
+        action: deploy
+
+    - name: Update the variables in runtime
+      run: |
+        sed -i "s/latest/${{github.run_number}}/" ${{ env.HELM_PATH }}values-${{ env.HELM_RELEASE_NAME }}.yaml
+        sed -i "s/buildnumber/${{github.run_number}}/" ${{ env.HELM_PATH }}values-${{ env.HELM_RELEASE_NAME }}.yaml
+        sed -i "s/VERSION1/${{env.VERSION1}}/g" ${{ env.HELM_PATH }}values-${{ env.HELM_RELEASE_NAME }}.yaml
+        sed -i "s/VERSION2/${{env.VERSION2}}/g" ${{ env.HELM_PATH }}values-${{ env.HELM_RELEASE_NAME }}.yaml 
+
+      
+    - uses: azure/k8s-bake@v2.4
+      with:
+        renderEngine: 'helm'
+        releaseName: ${{ env.HELM_RELEASE_NAME }}
+        helmChart: '${{ env.HELM_PATH }}'
+        overrideFiles: '${{ env.HELM_PATH }}values-${{ env.HELM_RELEASE_NAME }}.yaml'
+        helm-version: 'latest'
+      id: bake
+    
+    - name: Show container registry url
+      run: |
+        echo ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{github.run_number}}
+        
+    - name: Deploy to AKS 
+      uses: azure/k8s-deploy@v4
+      with:
+        namespace: ${{ env.NAMESPACE_CLEAN }}
+        manifests: |
+          ${{ steps.bake.outputs.manifestsBundle }}
+        images: |
+          ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{github.run_number}}
+        imagepullsecrets: |
+          ghcr-pull-cr
+        pull-images: false,
+        strategy: basic
+        action: deploy
+
+    - name: Azure Login
+      uses: azure/login@v1
+      with:
+        client-id: ${{ secrets.CLIENT_ID }}
+        tenant-id: ${{ secrets.TENANT_ID }}
+        subscription-id: ${{ secrets.SUBSCRIPTION_ID }}
+
+    - name: Azure Setup Swagger on APIM
+      uses: azure/CLI@v1
+      with:
+        azcliversion: latest
+        inlineScript: |
+          az account show
+          az aks install-cli
+          az aks get-credentials --resource-group ${{ env.RESOURCE_GROUP }} --name ${{ env.CLUSTER_NAME }}
+          export LB_IP=$(kubectl get services -n ${{ env.NAMESPACE_CLEAN }} -o json | jq -r '.items[] | select(.spec.type=="LoadBalancer" and .metadata.name=="moes-${{ env.HELM_RELEASE_NAME }}-${{env.VERSION1}}-gx-api-${{ env.API_NAME }}").status.loadBalancer.ingress[].ip')
+          echo $LB_IP
+          az apim api create --api-id "${{ env.API_NAME}}-${{ env.HELM_RELEASE_NAME }}-services-openapi-${{env.VERSION1}}" --display-name "OpenAPI ${{ env.API_NAME }} ${{ env.HELM_RELEASE_NAME }} ${{env.VERSION1}}" -g ${{ env.RESOURCE_GROUP }} -n ${{ env.APIM_NAME }} --service-url http://$LB_IP:80 --path "/${{ env.HELM_RELEASE_NAME }}/${{ env.VERSION1}}/${{ env.API_NAME}}-swagger" 
+          
+          if az apim api operation list -g ${{ env.RESOURCE_GROUP }} -n ${{ env.APIM_NAME }} --api-id "${{ env.API_NAME}}-${{ env.HELM_RELEASE_NAME }}-services-openapi-${{env.VERSION1}}" | grep -q "Get OpenAPI Spec"; then
+          echo "OpenAPI Spec operation already exists"
+          export OP_ID=$(az apim api operation list -g ${{ env.RESOURCE_GROUP }} -n ${{ env.APIM_NAME }} --api-id ${{ env.API_NAME}}-${{ env.HELM_RELEASE_NAME }}-services-openapi-${{env.VERSION1}} | jq -r '.[] | select(.urlTemplate=="/docs-json").name')
+          az apim api operation update -g ${{ env.RESOURCE_GROUP }} -n ${{ env.APIM_NAME }} --api-id "${{ env.API_NAME}}-${{ env.HELM_RELEASE_NAME }}-services-openapi-${{env.VERSION1}}" --display-name "Get OpenAPI Spec ${{ env.HELM_RELEASE_NAME }}" --method "GET" --url-template "/docs-json" --operation-id $OP_ID
+          else 
+          echo "Creating the OpenAPI Spec operation"
+          az apim api operation create -g ${{ env.RESOURCE_GROUP }} -n ${{ env.APIM_NAME }} --api-id "${{ env.API_NAME}}-${{ env.HELM_RELEASE_NAME }}-services-openapi-${{env.VERSION1}}" --display-name "Get OpenAPI Spec ${{ env.HELM_RELEASE_NAME }}" --method "GET" --url-template "/docs-json"
+          fi        
+          if az apim api operation list -g ${{ env.RESOURCE_GROUP }} -n ${{ env.APIM_NAME }} --api-id "${{ env.API_NAME}}-${{ env.HELM_RELEASE_NAME }}-services-openapi-${{env.VERSION1}}" | grep -q "Get OpenAPI Page"; then
+          echo "OpenAPI Page operation already exists"
+          else
+            echo "Creating the OpenAPI Page operation"
+            az apim api operation create -g ${{ env.RESOURCE_GROUP }} -n ${{ env.APIM_NAME }} --api-id "${{ env.API_NAME}}-${{ env.HELM_RELEASE_NAME }}-services-openapi-${{env.VERSION1}}" --display-name "Get OpenAPI Page ${{ env.HELM_RELEASE_NAME }}" --method "GET" --url-template "/docs"
+            az apim api operation create -g ${{ env.RESOURCE_GROUP }} -n ${{ env.APIM_NAME }} --api-id "${{ env.API_NAME}}-${{ env.HELM_RELEASE_NAME }}-services-openapi-${{env.VERSION1}}" --display-name "Get OpenAPI Page Assets ${{ env.HELM_RELEASE_NAME }}" --method "GET" --url-template "/docs/{asset}" --template-parameters name=asset description=Asset type=string required="true"
+          fi
+
+          
+    - name: Azure Setup APIM
+      uses: azure/CLI@v1
+      with:
+        azcliversion: latest
+        inlineScript: |
+          az account show
+          az aks install-cli
+          az aks get-credentials --resource-group ${{ env.RESOURCE_GROUP }} --name ${{ env.CLUSTER_NAME }}
+          export LB_IP=$(kubectl get services -n ${{ env.NAMESPACE_CLEAN }} -o json | jq -r '.items[] | select(.spec.type=="LoadBalancer" and .metadata.name=="moes-${{ env.HELM_RELEASE_NAME }}-${{env.VERSION1}}-gx-api-${{ env.API_NAME }}").status.loadBalancer.ingress[].ip')                                                                                                 
+          
+          # Retry mechanism to check Swagger document availability
+          
+          for i in {1..5}; do
+            if curl -I -s -o /dev/null -w "%{http_code}" "https://${{ env.APIM_NAME }}.azure-api.net/${{ env.HELM_RELEASE_NAME }}/${{env.VERSION1}}/${{ env.API_NAME}}-swagger/docs-json" | grep -q "200"; then
+              break
+            else
+              echo "Swagger document not available, retrying in 30 seconds..."
+              sleep 60
+          fi
+          done
+      
+          export API_ID=$(az apim api list -g ${{ env.RESOURCE_GROUP }} -n ${{ env.APIM_NAME }} | jq -r '.[] | select(.path=="${{ env.HELM_RELEASE_NAME }}/${{env.VERSION1}}/${{ env.API_NAME}}").name')
+          if test -z "$API_ID"                                                                                          
+          then
+            echo "Creating API $LB_IP and $API_ID are the values found"
+            az apim api import -g ${{ env.RESOURCE_GROUP }} --service-name ${{ env.APIM_NAME }} --display-name ${{ env.PKG_NAME }}-${{ env.HELM_RELEASE_NAME }}-${{env.VERSION1}} --path "/${{ env.HELM_RELEASE_NAME }}/${{ env.VERSION1 }}/${{ env.API_NAME}}" --specification-url https://${{ env.APIM_NAME }}.azure-api.net/${{ env.HELM_RELEASE_NAME }}/${{ env.VERSION1 }}/${{ env.API_NAME}}-swagger/docs-json --specification-format OpenApiJson --service-url http://$LB_IP:80 --subscription-required false
+          else
+            echo "API already exists $LB_IP and $API_ID are the values found"
+            az apim api import -g ${{ env.RESOURCE_GROUP }} --service-name ${{ env.APIM_NAME }} --display-name ${{ env.PKG_NAME }}-${{ env.HELM_RELEASE_NAME }}-${{env.VERSION1}} --path "/${{ env.HELM_RELEASE_NAME }}/${{ env.VERSION1 }}/${{ env.API_NAME}}" --specification-url https://${{ env.APIM_NAME }}.azure-api.net/${{ env.HELM_RELEASE_NAME }}/${{ env.VERSION1 }}/${{ env.API_NAME}}-swagger/docs-json --specification-format OpenApiJson --service-url http://$LB_IP:80 --api-id $API_ID --subscription-required false
+          fi
+          export API_ID=$(az apim api list -g ${{ env.RESOURCE_GROUP }} -n ${{ env.APIM_NAME }} | jq -r '.[] | select(.path=="${{ env.HELM_RELEASE_NAME }}/${{env.VERSION1}}/${{ env.API_NAME}}").name')
+                    
+          # Retrieve IP addresses for each brand and store them in an associative array
+          IFS=',' read -ra brands <<< "${{ env.BRANDS }}"
+          declare -A ips
+
+          for brand in "${brands[@]}"; do
+              ip=$(kubectl get services -n ${{ env.NAMESPACE_CLEAN }} -o json | jq -r --arg brand "$brand" '.items[] | select(.spec.type=="LoadBalancer" and .metadata.name == ($brand + "-${{ env.HELM_RELEASE_NAME }}-${{env.VERSION1}}-gx-api-${{ env.API_NAME }}")).status.loadBalancer.ingress[].ip')
+              ips["$brand"]="http://$ip:80"
+          done
+          # Print the IP addresses for debugging
+          for key in "${!ips[@]}"; do
+              echo "Base URL for $key: ${ips[$key]}"
+          done
+
+          # Assign variables for moes_url and jamba_url
+          moes_url="${ips["moes"]}"
+          jamba_url="${ips["jamba"]}"
+          mca_url="${ips["mca"]}"
+
+
+          # Print the URLs for debugging
+          echo "moes_url: $moes_url"
+          echo "jamba_url: $jamba_url"
+          echo "mca_url: $mca_url"
+
+          choose="<when condition=\\\"@(context.Request.Headers.GetValueOrDefault(\\\"X-FOCUS-BRAND\\\") == \\\"moes\\\")\\\"><set-backend-service base-url=\\\"${moes_url}\\\" /></when><when condition=\\\"@(context.Request.Headers.GetValueOrDefault(\\\"X-FOCUS-BRAND\\\") == \\\"jamba\\\")\\\"><set-backend-service base-url=\\\"${jamba_url}\\\" /></when><when condition=\\\"@(context.Request.Headers.GetValueOrDefault(\\\"X-FOCUS-BRAND\\\") == \\\"mca\\\")\\\"><set-backend-service base-url=\\\"${mca_url}\\\" /></when><otherwise><set-backend-service base-url=\\\"${moes_url}\\\" /></otherwise>"
+          if [ "${{ needs.set-environment.outputs.env_name }}" == 'fbqa' ]; then
+              echo "Setting CORS policy for fbqa environment"
+              allowed_origins="<origin>http://localhost:3000</origin>"
+              xml_payload="<policies><inbound><base /><cors allow-credentials=\"true\"><allowed-origins>${allowed_origins}</allowed-origins><allowed-methods><method>*</method></allowed-methods><allowed-headers><header>*</header></allowed-headers><expose-headers><header>*</header></expose-headers></cors><choose>${choose}</choose></inbound><backend><base /></backend><outbound><base /></outbound><on-error><base /></on-error></policies>"
+          else
+              xml_payload="<policies><inbound><base /><choose>${choose}</choose></inbound><backend><base /></backend><outbound><base /></outbound><on-error><base /></on-error></policies>"
+          fi         
+          echo "Final XML Payload:"
+          echo "${xml_payload}"
+          
+          az rest --method PUT --uri "https://management.azure.com/subscriptions/${{ secrets.SUBSCRIPTION_ID }}/resourceGroups/${{ env.RESOURCE_GROUP }}/providers/Microsoft.ApiManagement/service/${{ env.APIM_NAME }}/apis/$API_ID/policies/policy?api-version=2021-08-01" --body "{ \"properties\": { \"value\": \"${xml_payload}\", \"format\": \"rawxml\" } }"

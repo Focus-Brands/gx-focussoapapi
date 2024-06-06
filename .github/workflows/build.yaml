@@ -1,0 +1,112 @@
+name: Build on prod
+
+on:
+  release: 
+    types: [published]
+ 
+env:
+  REGISTRY: 'ghcr.io'
+  IMAGE_NAME: 'focus-brands/gx-api-payment/gx-api-payment-${{ vars.HELM_RELEASE_NAME }}'
+  HELM_PATH: './charts/gx-api-payment/'
+  TAG_NAME: 'prod'
+  PKG_NAME: '@focus-brands/gx-api-payment'
+  API_NAME: 'payment'
+  VERSION: 'v1'
+  BRANCH_NAME: ${{ github.ref_name }}
+  NAMESPACE: 'prod'
+  REPO_NAME: 'gx-api-payment'
+  CLUSTER_NAME: ${{ vars.CLUSTER_NAME}}
+  RESOURCE_GROUP: ${{ vars.RESOURCE_GROUP}}
+  HELM_RELEASE_NAME: 'prod'
+  APIM_NAME: ${{ vars.APIM_NAME}}
+  WEB_URL: ${{ vars.WEB_URL}}
+  PDEVWEB_URL: ${{ vars.PDEVWEB_URL}}
+  PQAWEB_URL: ${{ vars.PQAWEB_URL}}
+  DOMAIN_URL: ${{ vars.DOMAIN_URL}}
+
+permissions:
+  contents: read
+  packages: write
+jobs:    
+  build-publish-npmpkg:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          # Disabling shallow clone is recommended for improving relevancy of reporting
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+          registry-url: 'https://npm.pkg.github.com'
+          scope: '@focus-brands'
+
+      - name: Replace the token in npmrc file
+        shell: bash
+        env:
+          PAT: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          sed -i.back "s|NODE_AUTH_TOKEN|${PAT}|g" .npmrc
+
+      - name: Get current package version
+        run: echo "version=$(npm info ${{ env.PKG_NAME }} --json | jq '.versions[-1]' | tr -d '"')" >> $GITHUB_ENV
+
+      - name: Set package version in environment
+        run: npm version ${{ env.version }} --no-git-tag-version --allow-same-version
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Update package version
+        run: |
+          if [ "${{ github.ref }}" == "refs/heads/main" ]; then
+            export versionType=major
+          else
+            export versionType=patch
+          fi
+          echo ${{ github.ref }}
+          echo $versionType
+          # Incrementing the version number
+          npm version $versionType --no-git-tag-version --allow-same-version
+
+      - name: Creates a "dist" directory with the production build
+        run: npm run build
+
+      - run: npm publish --tag ${{ env.TAG_NAME }}
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-and-push-image:
+    needs: build-publish-npmpkg
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+      - name: Login to GitHub Package Registry
+        run: echo ${{ secrets.GITHUB_TOKEN }} | docker login docker.pkg.github.com -u ${{ github.repository }} --password-stdin
+
+      - name: Replace the token in npmrc file
+        shell: bash
+        env:
+          PAT: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          sed -i.back "s|NODE_AUTH_TOKEN|${PAT}|g" .npmrc
+
+      - name: Get latest package version
+        run: echo "version1=$(npm info ${{ env.PKG_NAME }} --json | jq '.versions[-1]' | tr -d '"')" >> $GITHUB_ENV
+
+      - name: Update Dockerfile with latest tag version
+        run: sed -i "s/${{ env.REPO_NAME }}@.*/${{ env.REPO_NAME }}@${{ env.version1 }}/" Dockerfile
+
+      - name: Build the Docker image
+        run: docker build -t ${{ env.REPO_NAME }}-${{ env.HELM_RELEASE_NAME }}:${{github.run_number}} .
+
+      - name: Tag the Docker image
+        run: docker tag ${{ env.REPO_NAME }}-${{ env.HELM_RELEASE_NAME }}:${{github.run_number}} docker.pkg.github.com/focus-brands/${{ env.REPO_NAME }}/${{ env.REPO_NAME }}-${{ env.HELM_RELEASE_NAME }}:${{ env.BRANCH_NAME }}
+
+      - name: Push the Docker image to the registry
+        run: docker push docker.pkg.github.com/focus-brands/${{ env.REPO_NAME }}/${{ env.REPO_NAME }}-${{ env.HELM_RELEASE_NAME }}:${{ env.BRANCH_NAME }}
