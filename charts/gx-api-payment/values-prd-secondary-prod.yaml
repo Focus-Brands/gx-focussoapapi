@@ -1,0 +1,107 @@
+# Default values for gx-api-payment.
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+replicaCount: 3
+
+image:
+  repository: ghcr.io/focus-brands/gx-api-payment/gx-api-payment-prod
+  pullPolicy: Always
+  # Overrides the image tag whose default is the chart appVersion.
+  tag: latest
+
+common_env:
+
+  - name: REDISPASSWORD
+    value: redispassword@azurekeyvault
+  - name: JWTPUBLICKEY
+    value: jwtpublickey@azurekeyvault
+  - name: APPINSIGHTSKEY
+    value: appinsightskey@azurekeyvault
+
+  - name: PORT
+    value: '3000'
+  - name: ENV_MODE
+    value: 'prod'
+  - name: LOG_LEVEL
+    value: 'log,warn,error'
+  - name: BUILD_NUMBER
+    value: 'buildnumber'
+  - name: REDIS_HOST
+    value: dp-prd-eu-redis-1-secondary.redis.cache.windows.net
+  - name: REDIS_PORT
+    value: 6380
+  - name: APP_INSIGHTS_INGESTION_ENDPOINT
+    value: https://eastus2-3.in.applicationinsights.azure.com
+  - name: APP_INSIGHTS_LIVE_ENDPOINT
+    value: https://eastus2.livediagnostics.monitor.azure.com
+  - name: SERVICENAME
+    value: payment-api
+  - name: ENVIRONMENT
+    value: prod
+  - name: DS_BASE_URL
+    value: 'http://prod-VERSION-gx-ds-payment.prod.svc.cluster.local:80'
+
+brands:
+  - environment: prod
+    version: v1
+    env:
+      - name: BRAND
+        value: "moes"
+
+    autoscaling:
+      enabled: true
+      minReplicas: 3
+      maxReplicas: 50
+      targetCPUUtilizationPercentage: 60
+      targetMemoryUtilizationPercentage: 60
+
+    resources: 
+      limits:
+        cpu: 0.2
+        memory: 512Mi
+      requests:
+        cpu: 0.2
+        memory: 512Mi
+  
+
+imagePullSecrets:
+  - name: 'ghcr-login-secret'
+nameOverride: ''
+fullnameOverride: ''
+
+serviceAccount:
+
+  create: false
+  annotations: {}
+  name: 'default'
+
+podAnnotations: {}
+
+podSecurityContext: {}
+
+securityContext: {}
+  
+
+service:
+  type: LoadBalancer
+  port: 80
+
+ingress:
+  enabled: false
+  className: ''
+
+  annotations: {}
+   
+
+  hosts:
+    - host: chart-example.local
+      paths:
+        - path: /
+          pathType: ImplementationSpecific
+  tls: []
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}

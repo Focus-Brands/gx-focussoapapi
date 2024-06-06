@@ -1,0 +1,24 @@
+{{- $service := .Values.service }}
+{{- $chartName := "gx-api-payment"}}
+
+{{- $brands := .Values.brands }}
+{{- range $brands }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .name }}{{ .environment }}-{{ .version }}-{{ $chartName }}
+  labels:
+    app: {{ .name }}{{ .environment }}-{{ .version }}-{{ $chartName }}
+  annotations:
+    service.beta.kubernetes.io/azure-load-balancer-internal: "true"
+spec:
+  type: {{ $service.type }}
+  ports:
+    - port: {{ $service.port }}
+      targetPort: 3000
+      protocol: TCP
+      name: http
+  selector:
+    app: {{ .name }}{{ .environment }}-{{ .version }}-{{ $chartName }}
+---
+{{- end }}

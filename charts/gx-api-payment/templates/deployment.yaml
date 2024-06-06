@@ -1,0 +1,69 @@
+{{- $podAnnotations := .Values.podAnnotations }}
+{{- $service := .Values.service }}
+{{- $replicacount := .Values.replicaCount }}
+{{- $podSecurityContext := .Values.podSecurityContext }}
+{{- $securityContext := .Values.securityContext }}
+{{- $imagePullSecrets := .Values.imagePullSecrets }}
+{{- $image := .Values.image }}
+{{- $common_env := .Values.common_env }}
+{{- $chartName := "gx-api-payment" }}
+{{- $brands := .Values.brands }}
+{{- range $brands }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .name }}{{ .environment }}-{{ .version }}-{{ $chartName }}
+  labels:
+    app: {{ .name }}{{ .environment }}-{{ .version }}-{{ $chartName }}
+spec:
+  {{- if not .autoscaling.enabled }}
+  replicas: {{ .autoscaling.minReplicas }}
+  {{- end }}
+  selector:
+    matchLabels:
+      app: {{ .name }}{{ .environment }}-{{ .version }}-{{ $chartName }}
+  template:
+    metadata:
+      {{- with $podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        app: {{ .name }}{{ .environment }}-{{ .version }}-{{ $chartName }}
+    spec:
+      {{- with $imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ $.Values.serviceAccount.name }}
+      securityContext:
+        {{- toYaml $podSecurityContext | nindent 8 }}
+      containers:
+        - name: {{ .name }}{{ .environment }}-{{ .version }}-{{ $chartName }}
+          securityContext:
+            {{- toYaml $securityContext | nindent 12 }}
+          image: "{{ $image.repository }}:{{ $image.tag }}"
+          imagePullPolicy: {{ $image.pullPolicy }}
+          env:
+            {{- range $common_env }}
+            - name: {{ .name }}
+              value: {{ .value | quote }}
+            {{- end }}
+            {{- range .env }}
+            - name: {{ .name }}
+              value: {{ .value | quote }}
+            {{- end }}
+          ports:
+            - name: http
+              containerPort: {{ $service.port }}
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 3000
+            initialDelaySeconds: 50
+            periodSeconds: 200
+          resources:
+            {{- toYaml .resources | nindent 12 }}
+---
+{{- end }}

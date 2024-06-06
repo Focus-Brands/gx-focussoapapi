@@ -1,0 +1,158 @@
+# Default values for gx-api-payment.
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+replicaCount: 1
+
+image:
+  repository: ghcr.io/focus-brands/gx-api-payment/gx-api-payment-pqa
+  pullPolicy: Always
+  # Overrides the image tag whose default is the chart appVersion.
+  tag: latest
+
+common_env:
+  - name: REDISPASSWORD
+    value: redispassword@azurekeyvault
+  - name: JWTPUBLICKEY
+    value: jwtpublickey@azurekeyvault
+  - name: APPINSIGHTSKEY
+    value: appinsightskey@azurekeyvault
+
+  - name: PORT
+    value: '3000'
+  - name: ENV_MODE
+    value: 'dev'
+  - name: LOG_LEVEL
+    value: error,warn,debug,log
+  - name: BUILD_NUMBER
+    value: 'buildnumber'
+  - name: APP_INSIGHTS_INGESTION_ENDPOINT
+    value: https://centralus-0.in.applicationinsights.azure.com/
+  - name: APP_INSIGHTS_LIVE_ENDPOINT
+    value: https://centralus.livediagnostics.monitor.azure.com/
+  - name: REDIS_HOST
+    value: dp-dev-cu-redis-1-replica.redis.cache.windows.net
+  - name: REDIS_PORT
+    value: 6380
+  - name: SERVICENAME
+    value: payment-api
+  - name: ENVIRONMENT
+    value: pqa
+  - name: SWAGGER_URL
+    value: https://dev.focusbrands.com/pqa/v1/payment/
+
+brands:
+  - name: moes-
+    environment: pqa
+    version: v1
+    env:
+      - name: BRAND
+        value: "moes"
+      - name: DS_BASE_URL
+        value: 'http://moes-pqa-VERSION1-gx-ds-payment.phtnqa.svc.cluster.local:80'
+
+    autoscaling:
+      enabled: true
+      minReplicas: 1
+      maxReplicas: 10
+      targetCPUUtilizationPercentage: 80
+      targetMemoryUtilizationPercentage: 80
+
+    resources: 
+      limits:
+        cpu: 0.2
+        memory: 256Mi
+      requests:
+        cpu: 0.2
+        memory: 256Mi
+    
+
+  - name: jamba-
+    environment: pqa
+    version: v1
+    env:
+      - name: BRAND
+        value: "jamba"
+      - name: DS_BASE_URL
+        value: 'http://jamba-pqa-VERSION1-gx-ds-payment.phtnqa.svc.cluster.local:80' 
+
+
+    autoscaling:
+      enabled: true
+      minReplicas: 1
+      maxReplicas: 10
+      targetCPUUtilizationPercentage: 80
+      targetMemoryUtilizationPercentage: 80
+
+    resources: 
+      limits:
+        cpu: 0.2
+        memory: 256Mi
+      requests:
+        cpu: 0.2
+        memory: 256Mi 
+
+  - name: mca-
+    environment: pqa
+    version: v1
+    env:
+      - name: BRAND
+        value: mca
+      - name: DS_BASE_URL
+        value: 'http://mca-pqa-VERSION1-gx-ds-payment.phtnqa.svc.cluster.local:80'
+
+
+    autoscaling:
+      enabled: true
+      minReplicas: 1
+      maxReplicas: 10
+      targetCPUUtilizationPercentage: 80
+      targetMemoryUtilizationPercentage: 80
+
+    resources: 
+      limits:
+        cpu: 0.2
+        memory: 256Mi
+      requests:
+        cpu: 0.2
+        memory: 256Mi
+
+
+imagePullSecrets:
+  - name: 'ghcr-login-secret'
+nameOverride: ''
+fullnameOverride: ''
+
+serviceAccount:
+  create: false
+  annotations: {}
+  name: 'default'
+
+podAnnotations: {}
+
+podSecurityContext: {}
+
+securityContext: {}
+  
+
+service:
+  type: LoadBalancer
+  port: 80
+
+ingress:
+  enabled: false
+  className: ''
+  annotations: {}
+   
+  hosts:
+    - host: chart-example.local
+      paths:
+        - path: /
+          pathType: ImplementationSpecific
+  tls: []
+ 
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}
