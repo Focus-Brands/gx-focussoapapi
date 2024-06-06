@@ -1,0 +1,10 @@
+*.d.ts
+*.js
+*.map
+node_modules
+!.eslintrc*
+!jest.config.js
+coverage
+types
+lib
+.npmrc

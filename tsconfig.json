@@ -1,0 +1,37 @@
+{
+  "compilerOptions": {
+    "baseUrl": "./",
+    "paths": {
+      "src/*": ["src/*"]
+    },
+    "target": "ES2021", // Target ECMAScript version
+    "module": "Node16", // Output module format
+    "strict": true, // Enable all strict type-checking options
+    "declaration": true, // Generate corresponding .d.ts file
+    "rootDir": "./src", // Root directory of source files
+    "declarationDir": "types",
+    "outDir": "lib",
+    "esModuleInterop": true, // Allow default imports from modules with no default export
+    "skipLibCheck": true, // Skip type checking of external dependencies
+    "forceConsistentCasingInFileNames": true, // Ensure consistent file naming
+    "strictNullChecks": true, // Enable strict null checks
+    "experimentalDecorators": true,
+    "strictPropertyInitialization": false,
+    "noImplicitAny": true,
+    "emitDecoratorMetadata": true,
+    "moduleResolution": "Node16",
+    "plugins": [
+      { "transform": "typescript-transform-paths" },
+      { "transform": "typescript-transform-paths", "afterDeclarations": true }
+    ],
+    "sourceMap": true
+  },
+  "exclude": [
+    "node_modules",
+    "lib/**/*",
+    "types/**/*",
+    "__mocks__/**/*",
+    "tests",
+    "jest.config.ts"
+  ] // Files to exclude from compilation
+}

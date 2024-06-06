@@ -1,0 +1,13 @@
+tests
+__mocks__
+*.ts
+*.map
+!*.d.ts
+tsconfig.json
+jest.config.*
+.prettierrc
+.lintstagedrc.*
+.github
+.husky
+.vscode
+coverage
